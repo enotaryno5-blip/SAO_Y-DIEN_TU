@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tải Thư Viện Offline - Công Cụ Chứng Thực</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f1f5f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .card { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); max-width: 600px; width: 100%; }
+        h1 { color: #0f172a; font-size: 1.5rem; margin-top: 0; text-align: center; }
+        p { color: #64748b; font-size: 0.95rem; text-align: center; line-height: 1.5; }
+        .file-list { margin: 20px 0; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+        .file-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; background: #fff; gap: 10px; }
+        .file-item:last-child { border-bottom: none; }
+        .file-info { display: flex; flex-direction: column; }
+        .file-name { font-weight: 600; color: #334155; font-size: 0.9rem; }
+        .file-url { font-size: 0.75rem; color: #94a3b8; max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .status-container { display: flex; align-items: center; gap: 8px; }
+        .status { font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+        .status.waiting { color: #94a3b8; }
+        .status.success { color: #16a34a; background: #dcfce7; padding: 4px 8px; border-radius: 4px; }
+        .status.error { color: #dc2626; background: #fee2e2; padding: 4px 8px; border-radius: 4px; }
+        
+        .manual-btn {
+            text-decoration: none; background: #3b82f6; color: white; font-size: 0.75rem; 
+            padding: 6px 10px; border-radius: 4px; font-weight: 500; white-space: nowrap;
+            display: none; /* Hidden by default */
+        }
+        .manual-btn:hover { background: #2563eb; }
+
+        .btn { display: block; width: 100%; padding: 14px; background: #0f172a; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; margin-top: 20px; }
+        .btn:hover { background: #334155; }
+        .btn:disabled { background: #94a3b8; cursor: not-allowed; }
+        .note { font-size: 0.8rem; color: #64748b; margin-top: 15px; text-align: left; background: #fff7ed; padding: 10px; border-radius: 6px; border: 1px solid #ffedd5; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Cài Đặt Chế Độ Offline</h1>
+        <p>Tải 6 file này và lưu vào <strong>cùng thư mục</strong> với file <code>index.html</code>.</p>
+        
+        <div class="file-list" id="list">
+            <!-- Items will be injected here -->
+        </div>
+
+        <button id="downloadBtn" class="btn" onclick="startDownload()">⬇️ Bắt đầu Tải Tự Động</button>
+        
+        <div class="note">
+            <strong>Lưu ý quan trọng:</strong><br>
+            - Nếu cột trạng thái báo <strong>"Lỗi"</strong> (màu đỏ), hãy bấm nút <strong>"Tải thủ công"</strong> màu xanh hiện ra ngay bên cạnh.<br>
+            - Khi tải thủ công: Nhấn chuột phải vào trang web hiện ra -> Chọn "Lưu thành..." (Save as...) -> Đặt tên đúng như cột "Tên file".
+        </div>
+    </div>
+
+    <script>
+        const files = [
+            { name: 'tailwindcss.js', url: 'https://cdn.tailwindcss.com' },
+            { name: 'react.min.js', url: 'https://unpkg.com/react@18/umd/react.production.min.js' },
+            { name: 'react-dom.min.js', url: 'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js' },
+            { name: 'babel.min.js', url: 'https://unpkg.com/@babel/standalone/babel.min.js' },
+            { name: 'pdf-lib.min.js', url: 'https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js' },
+            { name: 'fontkit.min.js', url: 'https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js' }
+        ];
+
+        const listEl = document.getElementById('list');
+        const btn = document.getElementById('downloadBtn');
+
+        // Render list
+        files.forEach((f, index) => {
+            const item = document.createElement('div');
+            item.className = 'file-item';
+            item.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${index + 1}. ${f.name}</span>
+                    <span class="file-url">${f.url}</span>
+                </div>
+                <div class="status-container">
+                    <span class="status waiting" id="status-${index}">Chờ...</span>
+                    <a href="${f.url}" target="_blank" download="${f.name}" class="manual-btn" id="manual-${index}">⬇️ Tải thủ công</a>
+                </div>
+            `;
+            listEl.appendChild(item);
+        });
+
+        async function downloadFile(url, filename, index) {
+            const statusEl = document.getElementById(`status-${index}`);
+            const manualBtn = document.getElementById(`manual-${index}`);
+            
+            try {
+                statusEl.innerText = 'Đang tải...';
+                statusEl.className = 'status waiting';
+
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Network error');
+                const blob = await response.blob();
+                
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                statusEl.innerText = '✅ OK';
+                statusEl.className = 'status success';
+                manualBtn.style.display = 'none';
+            } catch (error) {
+                console.error(error);
+                statusEl.innerText = '⚠️ Lỗi';
+                statusEl.className = 'status error';
+                // Hiện nút tải thủ công
+                manualBtn.style.display = 'inline-block';
+            }
+        }
+
+        async function startDownload() {
+            btn.disabled = true;
+            btn.innerText = 'Đang xử lý...';
+            
+            for (let i = 0; i < files.length; i++) {
+                await downloadFile(files[i].url, files[i].name, i);
+                // Delay nhỏ để tránh trình duyệt chặn popup
+                await new Promise(r => setTimeout(r, 500));
+            }
+
+            btn.innerText = 'Đã chạy xong. Kiểm tra danh sách trên.';
+            btn.style.background = '#334155';
+        }
+    </script>
+</body>
+</html>

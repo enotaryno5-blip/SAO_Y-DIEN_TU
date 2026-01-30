@@ -1,0 +1,5 @@
+{
+  "name": "Công Cụ Tạo Mẫu Chứng Thực & Ký Số",
+  "description": "Ứng dụng chèn mẫu chứng thực và tạo ô chờ ký số (Signature Field) để sử dụng với USB Token.",
+  "requestFramePermissions": []
+}
