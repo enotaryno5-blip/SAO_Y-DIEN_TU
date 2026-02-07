@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SAO Y ĐIỆN TỬ VER 7.4 (9 VỊ TRÍ)</title>
+    
+    <!-- 1. Cấu hình thư viện (Online/Offline Hybrid) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Thư viện SheetJS để xuất Excel chuẩn -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <!-- Thư viện PDF.js để xem trước PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    
+    <script>
+      // Cấu hình Worker cho PDF.js
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+
+    <!-- Import Map: Chỉ sử dụng React 18.2.0 để tránh xung đột -->
+    <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "pdf-lib": "https://esm.sh/pdf-lib@1.17.1",
+    "@pdf-lib/fontkit": "https://esm.sh/@pdf-lib/fontkit@1.1.1",
+    "lucide-react": "https://esm.sh/lucide-react@0.263.1?deps=react@18.2.0,react-dom@18.2.0",
+    "react-signature-canvas": "https://esm.sh/react-signature-canvas@1.0.6?deps=react@18.2.0,react-dom@18.2.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/"
+  }
+}
+</script>
+
+    <style>
+      body { font-family: 'Segoe UI', sans-serif; margin: 0; background-color: #f1f5f9; color: #0f172a; }
+      .cursor-wait { cursor: wait; }
+      @keyframes bounce-short { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+      .animate-bounce-short { animation: bounce-short 1s ease-in-out infinite; }
+      
+      /* Modal Styles */
+      .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 50; display: flex; align-items: center; justify-content: center; }
+      .modal-content { background: white; border-radius: 12px; width: 90%; max-width: 400px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1); }
+      .modal-header { padding: 16px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; font-weight: bold; }
+      .modal-body { padding: 16px; overflow-y: auto; }
+      .history-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #f1f5f9; }
+      .history-item:last-child { border-bottom: none; }
+      .history-item:hover { background-color: #f8fafc; }
+
+      /* Preview Canvas Responsive */
+      canvas { max-width: 100%; height: auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-radius: 4px; }
+      .sticky-preview { position: sticky; top: 80px; }
+    </style>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <!-- MÃ NGUỒN CHÍNH -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef, useCallback } from 'react';
+        import ReactDOM from 'react-dom/client';
+        import { PDFDocument, rgb } from 'pdf-lib';
+        import fontkit from '@pdf-lib/fontkit';
+        import { FileText, Download, RefreshCw, Book, Hash, AlertCircle, Trash2, FileCheck, Layers, Type, User, FolderOpen, Files, Banknote, Settings, WifiOff, UploadCloud, Eraser, PenTool, X, Archive, FileSpreadsheet, Eye, Stamp } from 'lucide-react';
+        import SignatureCanvas from 'react-signature-canvas';
+
+        // --- 1. TYPES & CONSTANTS ---
+        const AppState = {
+            IDLE: 'IDLE',
+            PROCESSING: 'PROCESSING',
+            SUCCESS: 'SUCCESS',
+            ERROR: 'ERROR'
+        };
+
+        // --- 2. SERVICES ---
+        
+        // >> Excel Service (SheetJS)
+        const formatCurrency = (value) => {
+            if (!value) return '';
+            const rawNumber = value.toString().replace(/\D/g, '');
+            if (!rawNumber) return value;
+            const formattedNumber = rawNumber.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+            return `${formattedNumber} đồng`;
+        };
+
+        const prepareExcelData = (record) => {
+            const signerInfo = record.signerName ? `${record.signerName.toUpperCase()} - công chứng viên` : '';
+            const formattedFee = formatCurrency(record.fee);
+            return {
+                "Số thứ tự/ số chứng thực (1)": record.certNumber || '',
+                "Ngày, tháng, năm chứng thực (2)": `${record.day}/${record.month}/${record.year}`,
+                "Họ tên của người yêu cầu chứng thực (3)": record.requestorName || '',
+                "Tên của bản chính giấy tờ, văn bản (4)": record.documentName || '',
+                "Họ tên, chức danh người ký chứng thực (5)": signerInfo,
+                "Số bản sao đã được chứng thực (6)": record.copyCount || '',
+                "Lệ phí/ Phí chứng thực (7)": formattedFee,
+                "Ghi chú (8)": ""
+            };
+        };
+
+        const createExcelBlob = (dataArray) => {
+            const ws = XLSX.utils.json_to_sheet(dataArray);
+            const wscols = [{wch: 15}, {wch: 25}, {wch: 25}, {wch: 30}, {wch: 30}, {wch: 15}, {wch: 20}, {wch: 15}];
+            ws['!cols'] = wscols;
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Sổ Khai Báo");
+            const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+            return new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        };
+
+        const generateExcel = (data) => createExcelBlob([prepareExcelData(data)]);
+        const generateConsolidatedExcel = (records) => {
+            const sortedRecords = [...records].sort((a, b) => a.timestamp - b.timestamp);
+            return createExcelBlob(sortedRecords.map(prepareExcelData));
+        };
+
+        // >> PDF Service
+        const FONT_URL = 'https://fonts.gstatic.com/s/tinos/v15/buE4poG45L0m2wn5cn7D.ttf';
+        const TEXT_COLOR = rgb(0, 0.2, 0.6);
+        const RED_COLOR = rgb(0.8, 0, 0);
+        const PLACEHOLDER_COLOR = rgb(0.8, 0.8, 0.8);
+
+        const fetchFont = async () => {
+            if (!navigator.onLine) throw new Error("OFFLINE_MODE");
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                const response = await fetch(FONT_URL, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                if (!response.ok) throw new Error(`Lỗi tải font: ${response.status}`);
+                return await response.arrayBuffer();
+            } catch (err) { throw new Error("OFFLINE_MODE"); }
+        };
+
+        const modifyPdf = async (pdfBytes, certData, signatureImageBase64, customFontBuffer, showSigPlaceholder = true) => {
+            const pdfDoc = await PDFDocument.load(pdfBytes);
+            if (fontkit) pdfDoc.registerFontkit(fontkit);
+
+            let fontBytes;
+            if (customFontBuffer) {
+                fontBytes = customFontBuffer;
+            } else {
+                try { fontBytes = await fetchFont(); } 
+                catch (e) { 
+                    if (e.message.includes("OFFLINE")) throw new Error("MISSING_FONT_OFFLINE");
+                    throw new Error("Không thể tải Font.");
+                }
+            }
+
+            let customFont;
+            try { customFont = await pdfDoc.embedFont(fontBytes); } catch (e) { throw new Error("Lỗi nạp Font."); }
+
+            const pages = pdfDoc.getPages();
+            let targetPage = pages[pages.length - 1];
+            let isNewPage = false;
+
+            if (certData.position === 'NEW_PAGE_TOP_RIGHT') {
+                const { width, height } = targetPage.getSize();
+                targetPage = pdfDoc.addPage([width, height]);
+                isNewPage = true;
+            }
+
+            const { width, height } = targetPage.getSize();
+            const TITLE_FONT_SIZE = 14; const LABEL_FONT_SIZE = 9; const VALUE_FONT_SIZE = 14; const CONTENT_FONT_SIZE = 9; const LINE_HEIGHT = 16;
+            const marginX = 60; const contentBlockHeight = (LINE_HEIGHT * 4) + 80 + LINE_HEIGHT + 20;
+
+            let startX = 0, currentY = 0, blockWidth = 0;
+
+            if (isNewPage) {
+                startX = width / 2; blockWidth = (width / 2) - marginX; currentY = height - 50;
+            } else {
+                startX = marginX; blockWidth = (width / 2) - marginX;
+                switch (certData.position) {
+                    case 'TOP_LEFT': currentY = height - 50; break;
+                    
+                    // Chia 9 phần:
+                    // Y = 0 là đáy trang. 
+                    // 1/9 trang (từ trên xuống) => Y = 8/9 chiều cao
+                    case 'ONE_NINTH_LEFT': currentY = height * (8/9); break;
+                    case 'TWO_NINTHS_LEFT': currentY = height * (7/9); break;
+                    case 'THREE_NINTHS_LEFT': currentY = height * (6/9); break;
+                    case 'FOUR_NINTHS_LEFT': currentY = height * (5/9); break;
+                    case 'FIVE_NINTHS_LEFT': currentY = height * (4/9); break;
+                    case 'SIX_NINTHS_LEFT': currentY = height * (3/9); break;
+                    case 'SEVEN_NINTHS_LEFT': currentY = height * (2/9); break;
+                    case 'EIGHT_NINTHS_LEFT': currentY = height * (1/9); break;
+                    
+                    case 'BOTTOM_LEFT': default: 
+                        const marginBottom = 30; currentY = marginBottom + contentBlockHeight; break;
+                }
+            }
+
+            const drawBoldLine = (text, y, fontSize, color = TEXT_COLOR) => {
+                const textWidth = customFont.widthOfTextAtSize(text, fontSize);
+                const x = startX + (blockWidth - textWidth) / 2;
+                targetPage.drawText(text, { x, y, size: fontSize, font: customFont, color });
+                targetPage.drawText(text, { x: x + 0.3, y, size: fontSize, font: customFont, color });
+            };
+
+            const drawRichLine = (segments, y) => {
+                let totalLineWidth = 0;
+                segments.forEach(s => totalLineWidth += customFont.widthOfTextAtSize(s.text, s.size));
+                let currentX = startX + (blockWidth - totalLineWidth) / 2;
+                segments.forEach(seg => {
+                    targetPage.drawText(seg.text, { x: currentX, y, size: seg.size, font: customFont, color: seg.color });
+                    if (seg.bold) targetPage.drawText(seg.text, { x: currentX + 0.3, y, size: seg.size, font: customFont, color: seg.color });
+                    currentX += customFont.widthOfTextAtSize(seg.text, seg.size);
+                });
+            };
+
+            drawBoldLine('CHỨNG THỰC BẢN SAO ĐÚNG VỚI BẢN CHÍNH', currentY, TITLE_FONT_SIZE); 
+            currentY -= LINE_HEIGHT;
+            const gap = "          ";
+            drawRichLine([
+                { text: "Số chứng thực: ", size: LABEL_FONT_SIZE, color: TEXT_COLOR, bold: true },
+                { text: certData.certNumber, size: VALUE_FONT_SIZE, color: RED_COLOR, bold: false },
+                { text: `${gap}Quyển số: `, size: LABEL_FONT_SIZE, color: TEXT_COLOR, bold: true },
+                { text: certData.bookNumber, size: VALUE_FONT_SIZE, color: RED_COLOR, bold: false },
+                { text: " -SCT/BS", size: LABEL_FONT_SIZE, color: TEXT_COLOR, bold: true }
+            ], currentY);
+            currentY -= LINE_HEIGHT;
+            drawBoldLine(`Ngày ${certData.day} tháng ${certData.month} năm ${certData.year}`, currentY, CONTENT_FONT_SIZE);
+            currentY -= LINE_HEIGHT;
+            drawBoldLine('Người thực hiện chứng thực', currentY, CONTENT_FONT_SIZE);
+
+            const signatureSpace = 75; const sigZoneWidth = 180; const sigZoneHeight = 60;  
+            const sigZoneX = startX + (blockWidth - sigZoneWidth) / 2;
+            const sigZoneY = currentY - signatureSpace; // Đã chỉnh sửa: Bỏ +15
+
+            if (signatureImageBase64) {
+                try {
+                    const pngImage = await pdfDoc.embedPng(signatureImageBase64);
+                    const pngDims = pngImage.scale(0.60); 
+                    const imgX = sigZoneX + (sigZoneWidth - pngDims.width) / 2;
+                    const imgY = sigZoneY + (sigZoneHeight - pngDims.height) / 2;
+                    targetPage.drawImage(pngImage, { x: imgX, y: imgY, width: pngDims.width, height: pngDims.height });
+                } catch (e) {}
+            }
+
+            // Chỉ vẽ khung + chữ gợi ý khi CHƯA ký số
+            if (showSigPlaceholder) {
+                try {
+                    targetPage.drawRectangle({
+                        x: sigZoneX, y: sigZoneY,
+                        width: sigZoneWidth, height: sigZoneHeight,
+                        borderColor: PLACEHOLDER_COLOR, borderWidth: 1, opacity: 0.5
+                    });
+
+                    const hintText = "Ký số (Token) tại đây";
+                    const hintSize = 9;
+                    const hintWidth = customFont.widthOfTextAtSize(hintText, hintSize);
+
+                    targetPage.drawText(hintText, {
+                        x: sigZoneX + (sigZoneWidth - hintWidth) / 2,
+                        y: sigZoneY + (sigZoneHeight / 2) - (hintSize / 2),
+                        size: hintSize,
+                        font: customFont,
+                        color: PLACEHOLDER_COLOR,
+                        opacity: 0.6
+                    });
+                } catch (e) {}
+            }
+
+            try {
+                const form = pdfDoc.getForm();
+                const signatureField = form.createSignature(`Signature_Cert_${Date.now()}`);
+                signatureField.addToPage(targetPage, { x: sigZoneX, y: sigZoneY, width: sigZoneWidth, height: sigZoneHeight });
+            } catch (sigError) {}
+
+            // Lưu lại vùng ký để gọi LocalSigner (ký Token)
+            try {
+                const pageIndex = pdfDoc.getPages().indexOf(targetPage);
+                window.__sigZones = window.__sigZones || {};
+                window.__sigZones.main = {
+                    pageNumber: pageIndex + 1,
+                    x: sigZoneX,
+                    y: sigZoneY,
+                    w: sigZoneWidth,
+                    h: sigZoneHeight
+                };
+            } catch (e) {}
+
+            return await pdfDoc.save();
+        };
+
+        // --- 3. COMPONENTS ---
+
+        const PdfPreview = ({ pdfBytes }) => {
+            const canvasRef = useRef(null);
+            // Thêm ref để quản lý RenderTask của PDF.js
+            const renderTaskRef = useRef(null);
+
+            useEffect(() => {
+                const renderPage = async () => {
+                    if (!pdfBytes || !canvasRef.current) return;
+                    
+                    // Nếu đang có task vẽ dở, hãy hủy nó đi trước khi vẽ cái mới
+                    if (renderTaskRef.current) {
+                        try {
+                            await renderTaskRef.current.cancel();
+                        } catch (error) {
+                            // Cancelled task thường throw error, ta bỏ qua
+                        }
+                    }
+
+                    try {
+                        const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
+                        const pdf = await loadingTask.promise;
+                        // Mặc định lấy trang cuối cùng vì đó là nơi đóng dấu
+                        const page = await pdf.getPage(pdf.numPages);
+                        
+                        const viewport = page.getViewport({ scale: 1.2 });
+                        const canvas = canvasRef.current;
+                        const context = canvas.getContext('2d');
+                        
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+
+                        // Lưu render task vào ref
+                        const renderTask = page.render({ canvasContext: context, viewport: viewport });
+                        renderTaskRef.current = renderTask;
+
+                        await renderTask.promise;
+                    } catch (error) {
+                        if (error.name !== 'RenderingCancelledException') {
+                            console.error("Preview render error:", error);
+                        }
+                    }
+                };
+                renderPage();
+                
+                // Cleanup function
+                return () => {
+                     if (renderTaskRef.current) {
+                        renderTaskRef.current.cancel();
+                    }
+                }
+            }, [pdfBytes]);
+
+            return (
+                <div className="bg-slate-200 rounded-lg p-2 overflow-auto flex justify-center border border-slate-300">
+                    {pdfBytes ? <canvas ref={canvasRef} /> : <div className="h-64 flex items-center justify-center text-slate-400">Đang tải bản xem trước...</div>}
+                </div>
+            );
+        };
+
+        const FileUpload = ({ onFileSelect }) => {
+            const handleDrop = useCallback((e) => {
+                e.preventDefault(); e.stopPropagation();
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    const file = e.dataTransfer.files[0];
+                    if (file.type === 'application/pdf') onFileSelect(file);
+                    else alert('Vui lòng chỉ tải lên file PDF.');
+                }
+            }, [onFileSelect]);
+            const handleChange = (e) => {
+                if (e.target.files && e.target.files[0]) onFileSelect(e.target.files[0]);
+            };
+            return (
+                <div onDrop={handleDrop} onDragOver={(e) => e.preventDefault()} className="border-2 border-dashed border-slate-300 rounded-lg p-10 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-slate-50 transition-colors bg-white shadow-sm">
+                    <input type="file" accept="application/pdf" className="hidden" id="file-upload" onChange={handleChange} />
+                    <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center">
+                        <div className="bg-blue-50 p-4 rounded-full mb-4"><UploadCloud className="w-8 h-8 text-blue-600" /></div>
+                        <h3 className="text-lg font-semibold text-slate-900 mb-1">Tải tài liệu PDF</h3>
+                        <p className="text-sm text-slate-500 max-w-xs">Kéo thả file vào đây hoặc nhấn để chọn file từ máy tính</p>
+                    </label>
+                </div>
+            );
+        };
+
+        const SignaturePad = ({ onSave }) => {
+            const sigCanvas = useRef(null);
+            const clear = () => { sigCanvas.current?.clear(); onSave(null); };
+            const handleEnd = () => {
+                if (sigCanvas.current && !sigCanvas.current.isEmpty()) {
+                    onSave(sigCanvas.current.getTrimmedCanvas().toDataURL('image/png'));
+                }
+            };
+            return (
+                <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+                    <div className="flex justify-between items-center mb-2">
+                        <label className="text-sm font-medium text-slate-700 flex items-center gap-2"><PenTool className="w-4 h-4" />Chữ ký người chứng thực</label>
+                        <button onClick={clear} className="text-xs text-red-600 hover:text-red-700 flex items-center gap-1 font-medium"><Eraser className="w-3 h-3" />Xóa</button>
+                    </div>
+                    <div className="border border-slate-300 rounded-md bg-white overflow-hidden">
+                        <SignatureCanvas ref={sigCanvas} penColor="blue" canvasProps={{ width: 300, height: 120, className: 'cursor-crosshair w-full h-32' }} onEnd={handleEnd} />
+                    </div>
+                </div>
+            );
+        };
+
+        const HistoryModal = ({ title, items, onRemove, onClose }) => {
+            return (
+                <div className="modal-overlay" onClick={onClose}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()}>
+                        <div className="modal-header"><span>Quản lý {title}</span><button onClick={onClose} className="text-slate-500 hover:text-red-600"><X className="w-5 h-5" /></button></div>
+                        <div className="modal-body">
+                            {items.length === 0 ? <p className="text-center text-slate-500 text-sm py-4">Chưa có dữ liệu</p> : 
+                            items.map((item, idx) => (<div key={idx} className="history-item"><span className="text-sm text-slate-700 truncate mr-2">{item}</span><button onClick={() => onRemove(item)} className="text-slate-400 hover:text-red-600 p-1"><Trash2 className="w-4 h-4" /></button></div>))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 4. MAIN APP ---
+        function App() {
+            const [file, setFile] = useState(null);
+            const [fontFile, setFontFile] = useState(null);
+            const [appState, setAppState] = useState(AppState.IDLE);
+            const [errorMessage, setErrorMessage] = useState(null);
+            const [lastDownloadedFile, setLastDownloadedFile] = useState(null);
+            const [savedSigners, setSavedSigners] = useState([]);
+            const [savedDocNames, setSavedDocNames] = useState([]); 
+            const [historyCount, setHistoryCount] = useState(0);
+            const [isSubmitted, setIsSubmitted] = useState(false);
+            const [modalConfig, setModalConfig] = useState({ show: false, type: null, title: '' });
+            const fontInputRef = useRef(null);
+            
+            // Preview State
+            const [previewBytes, setPreviewBytes] = useState(null);
+            const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+
+            const today = new Date();
+            const currentMonth = (today.getMonth() + 1).toString().padStart(2, '0');
+            const currentYear = today.getFullYear().toString();
+
+            const [certData, setCertData] = useState({
+                certNumber: '', bookNumber: `${currentMonth}/${currentYear}`,
+                day: today.getDate().toString().padStart(2, '0'), month: currentMonth, year: currentYear,
+                signerName: '', position: 'BOTTOM_LEFT', requestorName: '', documentName: '', copyCount: '', fee: ''
+            });
+
+            const [signature, setSignature] = useState(null);
+            const [ccvSignImage, setCcvSignImage] = useState(null); // PNG base64 ảnh chữ ký CCV (tải lên)
+            const [sealImage, setSealImage] = useState(null); // PNG base64 của con dấu (TC)
+
+            useEffect(() => {
+                try {
+                    const stored = localStorage.getItem('savedSigners'); if (stored) setSavedSigners(JSON.parse(stored));
+                    const storedDocs = localStorage.getItem('savedDocNames'); if (storedDocs) setSavedDocNames(JSON.parse(storedDocs));
+                    const historyLog = localStorage.getItem('cert_history_log'); if (historyLog) setHistoryCount(JSON.parse(historyLog).length);
+                } catch (e) {}
+            }, []);
+
+            // Effect để tạo Preview mỗi khi dữ liệu thay đổi
+            useEffect(() => {
+                if (!file) return;
+
+                const generatePreview = async () => {
+                    setIsPreviewLoading(true);
+                    try {
+                        const arrayBuffer = await file.arrayBuffer();
+                        let customFontBuffer = null;
+                        if (fontFile) customFontBuffer = await fontFile.arrayBuffer();
+                        
+                        // Gọi hàm modifyPdf nhưng không download, chỉ lấy bytes để render
+                        const modifiedBytes = await modifyPdf(new Uint8Array(arrayBuffer), certData, signature, customFontBuffer, true);
+                        setPreviewBytes(modifiedBytes);
+                    } catch (error) {
+                        console.error("Lỗi tạo preview:", error);
+                        // Nếu lỗi do thiếu font, có thể vẫn render file gốc hoặc thông báo
+                    } finally {
+                        setIsPreviewLoading(false);
+                    }
+                };
+
+                // Debounce 500ms để tránh giật khi gõ phím
+                const timeoutId = setTimeout(generatePreview, 500);
+                return () => clearTimeout(timeoutId);
+            }, [file, certData, signature, fontFile]);
+
+            const handleInputChange = (e) => {
+                const { name, value } = e.target;
+                setCertData(prev => {
+                    const newData = { ...prev, [name]: value };
+                    if (name === 'month' || name === 'year') newData.bookNumber = `${newData.month}/${newData.year}`;
+                    return newData;
+                });
+            };
+
+            const handleFontFileChange = (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    const file = e.target.files[0];
+                    if (file.name.endsWith('.ttf') || file.name.endsWith('.otf')) { setFontFile(file); setErrorMessage(null); }
+                    else alert("Vui lòng chỉ chọn file font .ttf hoặc .otf");
+                }
+            };
+
+            const triggerDownload = (url, fileName) => {
+                const link = document.createElement('a'); link.href = url; link.download = fileName;
+                document.body.appendChild(link); link.click(); document.body.removeChild(link);
+            };
+
+            const saveToHistory = (type, value) => {
+                if (!value || !value.trim()) return;
+                const cleanName = value.trim();
+                if (type === 'SIGNER') {
+                    const upperName = cleanName.toUpperCase();
+                    if (!savedSigners.includes(upperName)) {
+                        const newSaved = [upperName, ...savedSigners].slice(0, 10);
+                        setSavedSigners(newSaved); localStorage.setItem('savedSigners', JSON.stringify(newSaved));
+                    }
+                } else {
+                    if (!savedDocNames.includes(cleanName)) {
+                        const newSaved = [cleanName, ...savedDocNames].slice(0, 20);
+                        setSavedDocNames(newSaved); localStorage.setItem('savedDocNames', JSON.stringify(newSaved));
+                    }
+                }
+            };
+
+            const saveToHistoryLog = (data) => {
+                try {
+                    const newRecord = { ...data, id: Date.now().toString(), timestamp: Date.now() };
+                    const currentLogStr = localStorage.getItem('cert_history_log');
+                    const currentLog = currentLogStr ? JSON.parse(currentLogStr) : [];
+                    const newLog = [newRecord, ...currentLog];
+                    localStorage.setItem('cert_history_log', JSON.stringify(newLog));
+                    setHistoryCount(newLog.length);
+                } catch (e) {}
+            };
+
+            const handleExportHistoryLog = () => {
+                try {
+                    const currentLogStr = localStorage.getItem('cert_history_log');
+                    if (!currentLogStr) return alert("Chưa có dữ liệu.");
+                    const currentLog = JSON.parse(currentLogStr);
+                    const blobExcel = generateConsolidatedExcel(currentLog);
+                    const urlExcel = URL.createObjectURL(blobExcel);
+                    const fileName = `So-Chung-Thuc-Tong-Hop-${today.getDate()}${today.getMonth()+1}${today.getFullYear()}.xlsx`;
+                    triggerDownload(urlExcel, fileName);
+                } catch (e) { alert("Lỗi khi xuất sổ: " + e); }
+            };
+
+            const handleDownloadExcel = () => {
+                try {
+                    const blobExcel = generateExcel(certData);
+                    const urlExcel = URL.createObjectURL(blobExcel);
+                    const fileNameExcel = `sokhaibao-${certData.certNumber}.xlsx`;
+                    triggerDownload(urlExcel, fileNameExcel);
+                } catch (e) {
+                    alert("Lỗi khi tạo file Excel: " + e);
+                }
+            };
+
+            const handleClearHistoryLog = () => {
+                if (confirm("Xóa toàn bộ Sổ Chứng Thực Tổng Hợp?")) {
+                    localStorage.removeItem('cert_history_log'); setHistoryCount(0);
+                }
+            };
+
+            const deleteFromHistory = (item) => {
+                if (modalConfig.type === 'SIGNER') {
+                    const newSaved = savedSigners.filter(i => i !== item); setSavedSigners(newSaved); localStorage.setItem('savedSigners', JSON.stringify(newSaved));
+                } else {
+                    const newSaved = savedDocNames.filter(i => i !== item); setSavedDocNames(newSaved); localStorage.setItem('savedDocNames', JSON.stringify(newSaved));
+                }
+            };
+
+            const removeFile = () => {
+                setFile(null); setAppState(AppState.IDLE); setErrorMessage(null); setLastDownloadedFile(null);
+                setCertData(prev => ({ ...prev, certNumber: '', requestorName: '', documentName: '', copyCount: '', fee: '' })); 
+                setSignature(null); setIsSubmitted(false); setPreviewBytes(null);
+            };
+
+            const handleProcess = async () => {
+                setIsSubmitted(true);
+                if (!certData.certNumber.trim()) { setErrorMessage("Vui lòng nhập Số chứng thực"); window.scrollTo({ top: 150, behavior: 'smooth' }); return; }
+                if (!file) return;
+
+                setAppState(AppState.PROCESSING); setErrorMessage(null); setLastDownloadedFile(null);
+
+                try {
+                    if (certData.signerName) saveToHistory('SIGNER', certData.signerName);
+                    if (certData.documentName) saveToHistory('DOC', certData.documentName);
+
+                    // --- LOGIC MỚI: Chỉ tạo và tải PDF ---
+                    // Tạo lại PDF hoàn toàn mới từ file gốc
+                    const arrayBuffer = await file.arrayBuffer();
+                    let customFontBuffer = null;
+                    if (fontFile) customFontBuffer = await fontFile.arrayBuffer();
+
+                    const pdfBytes = await modifyPdf(new Uint8Array(arrayBuffer), certData, signature, customFontBuffer, true);
+                    
+                    const blobPdf = new Blob([pdfBytes], { type: 'application/pdf' });
+                    const urlPdf = URL.createObjectURL(blobPdf);
+                    const fileNamePdf = `chung-thuc-${certData.certNumber}.pdf`;
+                    // Không tự động tải về. Chỉ lưu PDF đã xử lý để xem/tải khi cần.
+
+                    // LƯU VÀO SỔ TỔNG HỢP (LocalStorage) - Dữ liệu vẫn được lưu để xuất sau
+                    saveToHistoryLog(certData);
+
+                    setLastDownloadedFile({ url: urlPdf, name: fileNamePdf });
+                    setAppState(AppState.SUCCESS);
+                    
+                } catch (error) {
+                    setAppState(AppState.ERROR);
+                    if (error.message === "MISSING_FONT_OFFLINE") {
+                        setErrorMessage("CHẾ ĐỘ OFFLINE: Vui lòng chọn file Font (.ttf) ở mục bên dưới.");
+                        setTimeout(() => { fontInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); fontInputRef.current?.classList.add('ring-2', 'ring-red-500', 'bg-red-50'); }, 300);
+                    } else {
+                        setErrorMessage(error.message || 'Lỗi xử lý PDF.');
+                    }
+                }
+            };
+
+
+            // ====== Ký 2 token (CCV rồi TC) thông qua LocalSigner (127.0.0.1:8989) ======
+            const arrayBufferToBase64 = (buffer) => {
+                let binary = '';
+                const bytes = new Uint8Array(buffer);
+                const chunkSize = 0x8000;
+                for (let i = 0; i < bytes.length; i += chunkSize) {
+                    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+                }
+                return btoa(binary);
+            };
+
+            const downloadBytesAsPdf = (bytes, fileName) => {
+                const blob = new Blob([bytes], { type: 'application/pdf' });
+                const url = URL.createObjectURL(blob);
+                triggerDownload(url, fileName);
+                setLastDownloadedFile({ url, name: fileName });
+            };
+
+            // Phóng to/thu nhỏ vùng hiển thị ảnh ký (center theo rect gốc)
+            const scaleRectCentered = (rect, scale) => {
+                const cx = rect.x + rect.w / 2;
+                const cy = rect.y + rect.h / 2;
+                const w2 = rect.w * scale;
+                const h2 = rect.h * scale;
+                return { ...rect, x: cx - w2 / 2, y: cy - h2 / 2, w: w2, h: h2 };
+            };
+
+            const signPdfViaLocalSigner = async ({ pdfBytes, role, appearanceBase64, rect, fieldName }) => {
+                const pdfBase64 = arrayBufferToBase64(pdfBytes);
+                const body = {
+                    pdfBase64,
+                    role,
+                    fieldName,
+                    pageNumber: rect.pageNumber,
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                    appearancePngBase64: appearanceBase64 || null
+                };
+
+                const resp = await fetch("http://127.0.0.1:8989/sign", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body)
+                });
+
+                if (!resp.ok) {
+                    const t = await resp.text();
+                    throw new Error("Lỗi ký Token (" + role + "): " + t);
+                }
+                return await resp.arrayBuffer();
+            };
+
+            const handleSignTwoTokens = async () => {
+                try {
+                    setErrorMessage(null);
+                    setAppState(AppState.PROCESSING);
+
+                    // 1) Kiểm tra LocalSigner đang chạy
+                    const health = await fetch("http://127.0.0.1:8989/health").then(r => r.text()).catch(() => null);
+                    if (health !== "ok") throw new Error("LocalSigner chưa chạy. Hãy chạy dotnet run và kiểm tra /health.");
+
+                    // 2) Tạo lại PDF "sạch" (không placeholder) rồi mới ký
+                    if (!file) throw new Error("Chưa có file PDF. Hãy tải PDF lên trước.");
+
+                    const arrayBuffer = await file.arrayBuffer();
+                    let customFontBuffer = null;
+                    if (fontFile) customFontBuffer = await fontFile.arrayBuffer();
+
+                    // Không vẽ chữ "Ký số (Token) tại đây" và không vẽ viền khung
+                    // Đồng thời để trống signatureImageBase64 (null) để khỏi “dính” ảnh nền
+                    const rawPdf = await modifyPdf(new Uint8Array(arrayBuffer), certData, null, customFontBuffer, false);
+
+                    // 3) Lấy vùng ký đã lưu từ modifyPdf
+                    const zone = window.__sigZones?.main;
+                    if (!zone) throw new Error("Chưa có tọa độ vùng ký. Hãy bấm 'Xử lý' lại 1 lần.");
+
+                    // 4) Ký CCV (hiển thị ảnh chữ ký)
+                    const ccvAppearance = ccvSignImage || signature;
+                    if (!ccvAppearance) throw new Error("Chưa có ảnh chữ ký CCV. Hãy vẽ chữ ký hoặc tải ảnh chữ ký (PNG).");
+
+                    const signed1 = await signPdfViaLocalSigner({
+                        pdfBytes: rawPdf,
+                        role: "CCV",
+                        appearanceBase64: ccvAppearance,
+                        rect: scaleRectCentered(zone, 1.55),
+                        fieldName: "Sig_CCV"
+                    });
+// 5) Ký TC (dịch trái để con dấu trùm ~2/3 chữ ký CCV)
+                    if (!sealImage) throw new Error("Chưa chọn Con dấu tổ chức (TC) (PNG).");
+                    const zoneTC = {
+                        pageNumber: zone.pageNumber,
+                        x: zone.x - (zone.w * 0.39),
+                        y: zone.y,
+                        w: zone.w,
+                        h: zone.h
+                    };
+                    const zoneTC_scaled = scaleRectCentered(zoneTC, 1.55);
+
+                    const signed2 = await signPdfViaLocalSigner({
+                        pdfBytes: signed1,
+                        role: "TC",
+                        appearanceBase64: sealImage,
+                        rect: zoneTC_scaled,
+                        fieldName: "Sig_TC"
+                    });
+
+                    // 6) Tải PDF đã ký 2 lần
+                    const outName = `chung-thuc-${certData.certNumber}-DA-KY.pdf`;
+                    downloadBytesAsPdf(signed2, outName);
+
+                    setAppState(AppState.SUCCESS);
+                } catch (e) {
+                    setAppState(AppState.ERROR);
+                    setErrorMessage(e.message || "Lỗi ký Token.");
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-100 flex flex-col font-sans">
+                <header className="bg-white shadow-sm sticky top-0 z-20">
+                    <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <div className="bg-blue-600 p-2 rounded-lg"><FileText className="w-5 h-5 text-white" /></div>
+                        <h1 className="text-lg font-bold text-slate-800">SAO Y ĐIỆN TỬ VER 7.4</h1>
+                    </div>
+                    </div>
+                </header>
+                <main className="flex-1 w-full max-w-6xl mx-auto p-4 md:p-6">
+                    {!file ? (
+                    <div className="max-w-2xl mx-auto space-y-6">
+                        <div className="bg-white rounded-xl shadow-md p-8 border border-slate-200 text-center">
+                        <div className="mb-6"><h2 className="text-xl font-bold text-slate-800 mb-2">Tải file PDF cần ký số</h2><p className="text-slate-500 text-sm">Hệ thống Hybrid: Hỗ trợ Live Preview</p></div>
+                        <FileUpload onFileSelect={setFile} />
+                        </div>
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+                            <div className="flex items-center justify-between mb-4"><h3 className="font-semibold text-slate-800 flex items-center gap-2"><Archive className="w-5 h-5 text-emerald-600" /> Sổ Chứng Thực Tổng Hợp</h3><span className="text-xs bg-slate-100 px-2 py-1 rounded-full text-slate-500 font-medium">Đã lưu: {historyCount}</span></div>
+                            <div className="flex gap-3">
+                                <button onClick={handleExportHistoryLog} disabled={historyCount === 0} className={`flex-1 py-2 px-4 rounded-lg font-medium flex items-center justify-center gap-2 ${historyCount === 0 ? 'bg-slate-100 text-slate-400' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}><FileSpreadsheet className="w-4 h-4"/> Xuất Sổ Excel</button>
+                                {historyCount > 0 && (<button onClick={handleClearHistoryLog} className="py-2 px-4 rounded-lg text-red-600 hover:bg-red-50"><Trash2 className="w-4 h-4"/></button>)}
+                            </div>
+                        </div>
+                    </div>
+                    ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                        {/* Cột Trái: Form Nhập Liệu */}
+                        <div className="space-y-6">
+                             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center justify-between">
+                                <div className="flex items-center gap-3 overflow-hidden"><div className="bg-red-100 p-2 rounded-lg flex-shrink-0"><FileText className="w-6 h-6 text-red-600" /></div><div className="min-w-0"><p className="text-sm font-medium text-slate-900 truncate">{file.name}</p></div></div>
+                                <button onClick={removeFile} className="text-slate-400 hover:text-red-500 p-2"><Trash2 className="w-5 h-5" /></button>
+                            </div>
+                            
+                            {/* KHỐI CHỌN FONT: ĐƯỢC CHUYỂN LÊN ĐẦU */}
+                            <div ref={fontInputRef} className={`bg-orange-50 p-4 rounded-lg border ${fontFile ? 'border-green-300 bg-green-50' : 'border-orange-100'}`}><label className="block text-sm font-medium text-orange-800 mb-2 flex items-center gap-2">{fontFile ? <FileCheck className="w-4 h-4 text-green-600"/> : <Type className="w-4 h-4" />} {fontFile ? <span className="text-green-700">Đã sẵn sàng Font Offline</span> : "Cấu hình Font (Offline)"}</label><input type="file" accept=".ttf,.otf" onChange={handleFontFileChange} className="block w-full text-sm text-slate-500"/>{!fontFile && (<div className="mt-2 text-xs text-orange-600"><WifiOff className="w-3 h-3 inline"/> Nếu không có mạng, hãy tải file <b>Times New Roman.ttf</b> vào đây.</div>)}</div>
+
+                            <div className="bg-white rounded-xl shadow-md border border-slate-200 p-6 md:p-8">
+                                <h3 className="text-lg font-semibold text-slate-800 mb-6 flex items-center gap-2 border-b pb-2"><Book className="w-5 h-5 text-blue-600" />Thông tin chứng thực</h3>
+                                <div className="space-y-5">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><label className="block text-sm font-medium text-slate-700 mb-1">Số chứng thực <span className="text-red-500">*</span></label><div className="relative"><Hash className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" /><input type="text" name="certNumber" value={certData.certNumber} onChange={handleInputChange} className={`w-full pl-9 pr-3 py-2 border rounded-lg ${isSubmitted && !certData.certNumber ? 'border-red-500 bg-red-50' : 'border-slate-300'}`} /></div></div>
+                                        <div><label className="block text-sm font-medium text-slate-700 mb-1">Quyển số</label><div className="relative"><Book className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" /><input name="bookNumber" value={certData.bookNumber} onChange={handleInputChange} className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg" /></div></div>
+                                    </div>
+                                    <div><label className="block text-sm font-medium text-slate-700 mb-1">Ngày chứng thực</label><div className="grid grid-cols-3 gap-3"><input name="day" value={certData.day} onChange={handleInputChange} className="w-full px-3 py-2 border border-slate-300 rounded-lg text-center" /><input name="month" value={certData.month} onChange={handleInputChange} className="w-full px-3 py-2 border border-slate-300 rounded-lg text-center" /><input name="year" value={certData.year} onChange={handleInputChange} className="w-full px-3 py-2 border border-slate-300 rounded-lg text-center" /></div></div>
+                                    <div><label className="block text-sm font-medium text-slate-700 mb-1 flex justify-between"><span>Người thực hiện (Viết hoa)</span><button onClick={() => setModalConfig({show: true, type: 'SIGNER', title: 'Người Ký'})} className="text-blue-600 text-xs flex items-center gap-1"><Settings className="w-3 h-3"/> Quản lý</button></label><input type="text" list="signer-suggestions" name="signerName" value={certData.signerName} onChange={handleInputChange} className="w-full px-3 py-2 border border-slate-300 rounded-lg uppercase" /><datalist id="signer-suggestions">{savedSigners.map((name, index) => <option key={index} value={name} />)}</datalist></div>
+                                    <div className="border-t border-slate-200 pt-4 mt-2 bg-slate-50 p-3 rounded-lg"><h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-1 uppercase"><Files className="w-4 h-4"/> Thông tin sổ theo dõi</h4>
+                                        <div className="space-y-3">
+                                            <div><label className="block text-xs font-medium text-slate-500 mb-1">Họ tên người yêu cầu</label><div className="relative"><User className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" /><input name="requestorName" value={certData.requestorName} onChange={handleInputChange} className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg" /></div></div>
+                                            <div><label className="block text-xs font-medium text-slate-500 mb-1 flex justify-between"><span>Tên bản chính</span><button onClick={() => setModalConfig({show: true, type: 'DOC', title: 'Tên Giấy Tờ'})} className="text-blue-600 text-xs flex items-center gap-1"><Settings className="w-3 h-3"/> Quản lý</button></label><div className="relative"><FolderOpen className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" /><input name="documentName" list="doc-suggestions" value={certData.documentName} onChange={handleInputChange} className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg" /><datalist id="doc-suggestions">{savedDocNames.map((name, index) => <option key={index} value={name} />)}</datalist></div></div>
+                                            <div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-medium text-slate-500 mb-1">Số bản sao</label><input name="copyCount" value={certData.copyCount} onChange={handleInputChange} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg" /></div><div><label className="block text-xs font-medium text-slate-500 mb-1">Lệ phí</label><input name="fee" value={certData.fee} onChange={handleInputChange} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg" /></div></div>
+                                        </div>
+                                    </div>
+                                    <div className="border-t border-slate-200 pt-4"><label className="block text-sm font-medium text-slate-700 mb-1">Vị trí lời chứng</label><select name="position" value={certData.position} onChange={handleInputChange} className="w-full px-3 py-2 border border-slate-300 rounded-lg">
+                                        <option value="TOP_LEFT">1. Đầu trang (Trái)</option>
+                                        <option value="ONE_NINTH_LEFT">2. 1/9 Trang (Trái)</option>
+                                        <option value="TWO_NINTHS_LEFT">3. 2/9 Trang (Trái)</option>
+                                        <option value="THREE_NINTHS_LEFT">4. 3/9 Trang (Trái)</option>
+                                        <option value="FOUR_NINTHS_LEFT">5. 4/9 Trang (Trái)</option>
+                                        <option value="FIVE_NINTHS_LEFT">6. 5/9 Trang (Trái) - (Giữa)</option>
+                                        <option value="SIX_NINTHS_LEFT">7. 6/9 Trang (Trái)</option>
+                                        <option value="SEVEN_NINTHS_LEFT">8. 7/9 Trang (Trái)</option>
+                                        <option value="EIGHT_NINTHS_LEFT">9. 8/9 Trang (Trái)</option>
+                                        <option value="BOTTOM_LEFT">10. Cuối trang (Trái) - Mặc định</option>
+                                        <option value="NEW_PAGE_TOP_RIGHT">11. Đầu trang sau (Phải)</option>
+                                    </select></div>
+                                    
+                                    <SignaturePad onSave={setSignature} />
+                                    {/* Con dấu tổ chức (TC) */}
+                                    
+                                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mt-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+                                                <PenTool className="w-4 h-4" />Ảnh chữ ký CCV (PNG)
+                                            </label>
+                                            {ccvSignImage && (
+                                                <button onClick={() => setCcvSignImage(null)} className="text-xs text-red-600 hover:text-red-700 font-medium">Xóa</button>
+                                            )}
+                                        </div>
+                                        <input
+                                            type="file"
+                                            accept="image/png"
+                                            onChange={async (e) => {
+                                                const f = e.target.files && e.target.files[0];
+                                                if (!f) return;
+                                                const reader = new FileReader();
+                                                reader.onload = () => setCcvSignImage(reader.result);
+                                                reader.readAsDataURL(f);
+                                            }}
+                                            className="block w-full text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                                        />
+                                        <div className="text-xs text-slate-500 mt-2">
+                                            Nếu không chọn ảnh, hệ thống sẽ dùng chữ ký vẽ ở ô “Chữ ký người chứng thực”.
+                                        </div>
+                                    </div>
+<div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mt-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+                                                <Stamp className="w-4 h-4" />Con dấu tổ chức (TC) (PNG)
+                                            </label>
+                                            {sealImage && (
+                                                <button onClick={() => setSealImage(null)} className="text-xs text-red-600 hover:text-red-700 font-medium">Xóa</button>
+                                            )}
+                                        </div>
+                                        <input
+                                            type="file"
+                                            accept="image/png"
+                                            onChange={async (e) => {
+                                                const f = e.target.files && e.target.files[0];
+                                                if (!f) return;
+                                                const reader = new FileReader();
+                                                reader.onload = () => setSealImage(reader.result);
+                                                reader.readAsDataURL(f);
+                                            }}
+                                            className="block w-full text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+                                        />
+                                        <div className="text-xs text-slate-500 mt-2">
+                                            Con dấu sẽ dùng cho chữ ký số của Tổ chức. Khi ký 2 lần, con dấu sẽ đặt lệch sang trái để trùm ~2/3 chữ ký CCV.
+                                        </div>
+                                    </div>
+
+                                    <div className="pt-4">{errorMessage && (<div className="mb-4 bg-red-50 text-red-700 p-3 rounded-lg text-sm flex items-start gap-2 border border-red-200"><AlertCircle className="w-5 h-5 flex-shrink-0" />{errorMessage}</div>)}<button onClick={handleProcess} disabled={appState === AppState.PROCESSING} className={`w-full py-4 px-6 rounded-xl text-white font-bold text-lg shadow-lg flex items-center justify-center gap-2 ${appState === AppState.PROCESSING ? 'bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'}`}>{appState === AppState.PROCESSING ? 'Đang xử lý...' : 'Xử lý'}</button></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Cột Phải: Live Preview */}
+                        <div className="sticky-preview space-y-4">
+                            <div className="bg-slate-800 text-white p-3 rounded-t-lg flex items-center justify-between">
+                                <h3 className="font-semibold flex items-center gap-2"><Eye className="w-4 h-4" /> Xem trước (Trang cuối)</h3>
+                                {isPreviewLoading && <span className="text-xs bg-slate-700 px-2 py-1 rounded animate-pulse">Đang cập nhật...</span>}
+                            </div>
+                            <div className="bg-white p-4 rounded-b-lg shadow-md border border-slate-200 min-h-[500px] flex items-start justify-center">
+                                <PdfPreview pdfBytes={previewBytes} />
+                            </div>
+                             {appState === AppState.SUCCESS && lastDownloadedFile && (
+                                <div className="bg-green-50 border border-green-200 rounded-xl p-6 flex flex-col items-center text-center mt-4 shadow-lg">
+                                    <div className="bg-green-100 p-3 rounded-full mb-3"><FileCheck className="w-8 h-8 text-green-600" /></div>
+                                    <h3 className="text-lg font-bold text-green-800">Thành công!</h3>
+                                    <div className="flex gap-3 w-full mt-4 flex-wrap">
+                                        <button onClick={() => triggerDownload(lastDownloadedFile.url, lastDownloadedFile.name)} className="flex-1 bg-white border border-green-300 text-green-700 py-2 rounded-lg text-sm font-medium hover:bg-green-50">Tải PDF đã xử lý</button>
+                                        <button onClick={handleSignTwoTokens} className="flex-1 bg-purple-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-purple-700">Ký 2 Token &amp; Tải PDF</button>
+                                        <button onClick={handleDownloadExcel} className="flex-1 bg-white border border-blue-300 text-blue-700 py-2 rounded-lg text-sm font-medium hover:bg-blue-50">Tải File Excel</button>
+                                        <button onClick={removeFile} className="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-700">Làm hồ sơ mới</button>
+                                    </div>
+                                </div>
+                             )}
+                        </div>
+                    </div>
+                    )}
+                    {modalConfig.show && (<HistoryModal title={modalConfig.title} items={modalConfig.type === 'SIGNER' ? savedSigners : savedDocNames} onRemove={deleteFromHistory} onClose={() => setModalConfig({...modalConfig, show: false})} />)}
+                </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

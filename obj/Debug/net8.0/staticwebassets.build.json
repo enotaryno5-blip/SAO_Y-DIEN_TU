@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Hash": "a/wtacdNNbN9DRNMVivkYjYkAq7pc5lBL1lYqlNXY6U=",
+  "Source": "LocalSigner",
+  "BasePath": "_content/LocalSigner",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": []
+}
